@@ -18,6 +18,7 @@ class MtpBridge
         Console.InputEncoding = Encoding.UTF8;
         Console.OutputEncoding = new UTF8Encoding(false);
         var devices = MediaDevice.GetDevices().ToList();
+        var knownDirectories = new HashSet<string>(StringComparer.Ordinal);
         try
         {
             string line;
@@ -39,21 +40,34 @@ class MtpBridge
                     else if (command == "upload")
                     {
                         string target = request["path"];
-                        if (device.FileExists(target) || device.DirectoryExists(target))
-                            throw new IOException("Имя уже занято на телефоне. Оригинал сохранён.");
+                        bool alreadyPresent = device.FileExists(target);
+                        if (!alreadyPresent && device.DirectoryExists(target))
+                            throw new IOException("Вместо файла на телефоне находится папка. Оригинал сохранён.");
                         string parent = Path.GetDirectoryName(target);
-                        if (!device.DirectoryExists(parent)) device.CreateDirectory(parent);
                         string expected;
                         long size;
                         double uploadSeconds, verifySeconds;
-                        using (var source = new FileStream(request["source"], FileMode.Open, FileAccess.Read, FileShare.Read))
+                        using (var source = new FileStream(request["source"], FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan))
                         {
                             size = source.Length;
+                            if (alreadyPresent && device.GetFileInfo(target).Length != (ulong)size)
+                                throw new IOException("Имя совпадает, но размер копии другой. Оригинал сохранён.");
                             using (var sha = SHA256.Create()) expected = Hex(sha.ComputeHash(source));
                             source.Position = 0;
                             var timer = Stopwatch.StartNew();
-                            device.UploadFile(source, target);
-                            uploadSeconds = timer.Elapsed.TotalSeconds;
+                            if (!alreadyPresent)
+                            {
+                                // Only cache parents confirmed in this connected session. Do not cache files:
+                                // Explorer or another application may add a conflicting file at any time.
+                                string directoryKey = device.DeviceId + "\n" + parent;
+                                if (!knownDirectories.Contains(directoryKey))
+                                {
+                                    if (!device.DirectoryExists(parent)) device.CreateDirectory(parent);
+                                    knownDirectories.Add(directoryKey);
+                                }
+                                device.UploadFile(source, target);
+                            }
+                            uploadSeconds = alreadyPresent ? 0 : timer.Elapsed.TotalSeconds;
                             timer.Restart();
                             using (var sha = SHA256.Create())
                             using (var sink = new CryptoStream(Stream.Null, sha, CryptoStreamMode.Write))
@@ -65,12 +79,18 @@ class MtpBridge
                             }
                             verifySeconds = timer.Elapsed.TotalSeconds;
                         }
-                        Reply(new { ok = true, sha256 = expected, size = size, upload_seconds = uploadSeconds, verify_seconds = verifySeconds });
+                        Reply(new { ok = true, sha256 = expected, size = size, already_present = alreadyPresent, upload_seconds = uploadSeconds, verify_seconds = verifySeconds });
                     }
                     else throw new ArgumentException("Unknown command");
                 }
               }
-              catch (Exception error) { Reply(new { ok = false, error = error.Message }); }
+              catch (Exception error)
+              {
+                  string message = error.HResult == unchecked((int)0x800700AA)
+                      ? "Телефон занят другой операцией. Дождитесь её завершения и повторите перенос. Оригинал сохранён."
+                      : error.Message;
+                  Reply(new { ok = false, error = message });
+              }
             }
             return 0;
         }

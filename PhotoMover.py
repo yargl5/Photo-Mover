@@ -268,11 +268,15 @@ class PhoneMover:
                 try: files.append((p, p.relative_to(src), p.stat().st_size))
                 except OSError: pass
         total = sum(x[2] for x in files); done = 0; started = time.monotonic(); moved = 0
+        duplicates = 0
+        errors = 0
         self.events.put(("info", f"Найдено файлов: {len(files)}"))
         if not files: self.events.put(("finish", "В папке нет файлов для переноса.")); return
         for index, (source, relative, size) in enumerate(files, 1):
             if self.cancelled: break
             try:
+                already_present = False
+                before = source.stat()
                 self.events.put(("phase", "Передача и проверка: " + source.name))
                 if isinstance(dst, tuple):
                     result = session.request(
@@ -280,31 +284,48 @@ class PhoneMover:
                         source=str(source.resolve()), cancelled=lambda: self.cancelled, timeout=86400,
                     )
                     expected = result["sha256"]
+                    already_present = result.get("already_present", False)
                     upload_time = result.get("upload_seconds", 0)
                     verify_time = result.get("verify_seconds", 0)
                     self.events.put(("info", f"{source.name}: запись {upload_time:.2f} с, проверка {verify_time:.2f} с"))
                 else:
                     target = dst / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    # Exclusive creation prevents overwriting existing photos.
-                    with source.open("rb") as inp, target.open("xb") as out:
-                        shutil.copyfileobj(inp, out, 1024 * 1024)
-                        out.flush()
-                        os.fsync(out.fileno())
+                    already_present = target.exists()
+                    if already_present:
+                        if target.is_symlink() or target.samefile(source):
+                            raise IOError("назначение ссылается на исходник; файл сохранён")
+                        if not target.is_file() or target.stat().st_size != size:
+                            raise IOError("имя совпадает, но размер копии другой")
+                    else:
+                        # Exclusive creation prevents overwriting existing photos.
+                        with source.open("rb") as inp, target.open("xb") as out:
+                            shutil.copyfileobj(inp, out, 1024 * 1024)
+                            out.flush()
+                            os.fsync(out.fileno())
                     expected = self._hash(target)
                 if self.cancelled:
                     raise mtp_backend.TransferCancelled("Остановлено. Оригинал сохранён.")
                 if source.stat().st_size != size or self._hash(source) != expected:
                     raise IOError("содержимое копии не совпадает с оригиналом")
+                after = source.stat()
+                if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+                    raise IOError("исходник изменился во время проверки; файл сохранён")
+                if self.cancelled:
+                    raise mtp_backend.TransferCancelled("Остановлено. Оригинал сохранён.")
                 source.unlink()
+                if already_present:
+                    duplicates += 1
+                    self.events.put(("info", f"Копия совпадает по SHA-256: {relative}. Удалён только оригинал на ПК."))
                 moved += 1; done += size
                 elapsed = max(time.monotonic() - started, 0.001)
                 speed = done / elapsed; remaining = (total - done) / speed if speed else 0
                 self.events.put(("progress", done / total * 100 if total else index / len(files) * 100, f"{index}/{len(files)}  •  {source.name}", f"{speed / 1048576:.1f} МБ/с  •  осталось примерно {self._eta(remaining)}"))
             except Exception as exc:
+                errors += 1
                 self.events.put(("info", f"Ошибка: {relative} — {exc}"))
         if self.cancelled: self.events.put(("finish", f"Остановлено. Успешно перенесено: {moved} из {len(files)}."))
-        else: self.events.put(("finish", f"Готово. Перенесено и удалено с ПК: {moved} файлов."))
+        else: self.events.put(("finish", f"Готово. Новых: {moved - duplicates}; совпавших копий: {duplicates}; ошибок: {errors}."))
 
     @staticmethod
     def _hash(path):

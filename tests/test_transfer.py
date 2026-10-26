@@ -38,6 +38,41 @@ class TransferTests(unittest.TestCase):
         self.assertEqual((self.a / "file").read_bytes(), b"new")
         self.assertEqual((self.b / "file").read_bytes(), b"old")
 
+    def test_identical_local_duplicate_removes_only_source(self):
+        (self.a / "file").write_bytes(b"same-content")
+        (self.b / "file").write_bytes(b"same-content")
+        self.worker._transfer(self.a, self.b)
+        self.assertFalse((self.a / "file").exists())
+        self.assertEqual((self.b / "file").read_bytes(), b"same-content")
+
+    def test_existing_duplicate_with_different_size_is_preserved(self):
+        (self.a / "file").write_bytes(b"long content")
+        (self.b / "file").write_bytes(b"short")
+        self.worker._transfer(self.a, self.b)
+        self.assertTrue((self.a / "file").exists())
+        self.assertEqual((self.b / "file").read_bytes(), b"short")
+
+    def test_identical_mtp_duplicate_removes_source(self):
+        p = self.a / "file"
+        p.write_bytes(b"content")
+        digest = hashlib.sha256(b"content").hexdigest()
+        with patch("mtp_backend.Session") as session:
+            session.return_value.__enter__.return_value.request.return_value = {"sha256": digest, "already_present": True, "upload_seconds": 0}
+            self.worker._transfer(self.a, ("device-id", "\\Storage"))
+        self.assertFalse(p.exists())
+        self.assertTrue(any("Копия совпадает" in str(event) for event in list(self.worker.events.queue)))
+
+    def test_source_changed_during_verification_is_preserved(self):
+        p = self.a / "file"
+        p.write_bytes(b"before")
+        def changed(*args, **kwargs):
+            p.write_bytes(b"after!")
+            return {"sha256": hashlib.sha256(b"before").hexdigest(), "already_present": True}
+        with patch("mtp_backend.Session") as session:
+            session.return_value.__enter__.return_value.request.side_effect = changed
+            self.worker._transfer(self.a, ("device-id", "\\Storage"))
+        self.assertEqual(p.read_bytes(), b"after!")
+
     def test_mtp_success_deletes_source_after_hash_check(self):
         p = self.a / "file"
         p.write_bytes(b"content")
