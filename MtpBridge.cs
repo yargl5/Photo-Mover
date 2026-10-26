@@ -19,6 +19,7 @@ class MtpBridge
         Console.OutputEncoding = new UTF8Encoding(false);
         var devices = MediaDevice.GetDevices().ToList();
         var directoryIndexes = new Dictionary<string, Dictionary<string, MediaFileSystemInfo>>(StringComparer.Ordinal);
+        var parentIds = new Dictionary<string, string>(StringComparer.Ordinal);
         try
         {
             string line;
@@ -48,7 +49,9 @@ class MtpBridge
                         {
                             if (!device.DirectoryExists(parent)) device.CreateDirectory(parent);
                             index = new Dictionary<string, MediaFileSystemInfo>(StringComparer.OrdinalIgnoreCase);
-                            foreach (var entry in device.GetDirectoryInfo(parent).EnumerateFileSystemInfos())
+                            var directory = device.GetDirectoryInfo(parent);
+                            parentIds[directoryKey] = directory.Id;
+                            foreach (var entry in directory.EnumerateFileSystemInfos())
                             {
                                 // Ambiguous names must never cause source deletion.
                                 if (index.ContainsKey(entry.Name)) index[entry.Name] = null;
@@ -79,18 +82,14 @@ class MtpBridge
                             var timer = Stopwatch.StartNew();
                             if (!alreadyPresent)
                             {
-                                // Keep the library's live collision check before creation: another app
-                                // can add a conflicting file after our directory snapshot was built.
-                                device.UploadFile(source, target);
+                                // Create a new WPD object using the cached parent ID, then retain
+                                // the returned ID. Never reopen an existing file for writing.
+                                file = WpdUpload.Create(device, parentIds[directoryKey], name, source);
+                                if (!String.Equals(file.Name, name, StringComparison.OrdinalIgnoreCase))
+                                    throw new IOException("Телефон изменил имя файла. Оригинал сохранён.");
+                                index[name] = file;
                             }
                             uploadSeconds = alreadyPresent ? 0 : timer.Elapsed.TotalSeconds;
-                            if (!alreadyPresent)
-                            {
-                                lookupTimer.Restart();
-                                file = device.GetFileInfo(target);
-                                index[name] = file;
-                                lookupSeconds += lookupTimer.Elapsed.TotalSeconds;
-                            }
                             timer.Restart();
                             using (var sha = SHA256.Create())
                             using (var sink = new CryptoStream(Stream.Null, sha, CryptoStreamMode.Write))

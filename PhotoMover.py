@@ -16,7 +16,7 @@ import mtp_backend
 class PhoneMover:
     def __init__(self, root):
         self.root = root
-        self.root.title("Photo Mover · MTP 1.3")
+        self.root.title("Photo Mover · MTP 1.4")
         self.root.geometry("900x680")
         # Action controls stay reachable while the log area shrinks.
         self.root.minsize(640, 560)
