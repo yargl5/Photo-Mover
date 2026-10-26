@@ -2,6 +2,8 @@
 
 Перенос файлов из папки на телефон или другой накопитель с автоматическим освобождением места на ПК.
 
+**[Скачать актуальную версию](https://github.com/yargl5/Photo-Mover/releases/latest)** · **[Все релизы](https://github.com/yargl5/Photo-Mover/releases)** · [История версий](RELEASES.md)
+
 ![Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 
@@ -19,7 +21,7 @@
 
 ## Быстрый запуск
 
-1. Скачайте [PhotoMover-MTP.exe](PhotoMover-MTP.exe) из этого репозитория.
+1. Откройте [последний релиз](https://github.com/yargl5/Photo-Mover/releases/latest) и скачайте **PhotoMover-v1.4.0.exe** из раздела **Assets**. Архивы **Source code** нужны для разработки, а не для запуска.
 2. Подключите и разблокируйте телефон. В USB-настройках выберите **Передача файлов / MTP**.
 3. Запустите программу.
 4. Выберите папку с файлами на ПК.
@@ -41,6 +43,16 @@
 - `F11` — включить или выключить полный экран;
 - `Esc` — выйти из полного экрана;
 - кнопки управления остаются доступны при уменьшении окна.
+
+## Релизы
+
+Актуальная версия — **[MTP 1.4](https://github.com/yargl5/Photo-Mover/releases/tag/v1.4.0)**,
+помеченная **Latest**. У каждого релиза свой EXE с номером версии,
+описание изменений и файл `SHA256SUMS.txt` для проверки загрузки.
+
+Старые сборки сохранены отдельно для истории. Версии до MTP не видят телефоны
+без буквы диска; первая сборка с ошибкой tkinter помечена prerelease.
+Полная таблица доступна в [истории версий](RELEASES.md).
 
 ## Запуск из исходника
 
