@@ -16,7 +16,7 @@ import mtp_backend
 class PhoneMover:
     def __init__(self, root):
         self.root = root
-        self.root.title("Photo Mover")
+        self.root.title("Photo Mover · MTP 1.3")
         self.root.geometry("900x680")
         # Action controls stay reachable while the log area shrinks.
         self.root.minsize(640, 560)
@@ -279,6 +279,7 @@ class PhoneMover:
                 before = source.stat()
                 self.events.put(("phase", "Передача и проверка: " + source.name))
                 if isinstance(dst, tuple):
+                    request_started = time.monotonic()
                     result = session.request(
                         "upload", device=dst[0], path=ntpath.join(dst[1], str(relative)),
                         source=str(source.resolve()), cancelled=lambda: self.cancelled, timeout=86400,
@@ -287,7 +288,9 @@ class PhoneMover:
                     already_present = result.get("already_present", False)
                     upload_time = result.get("upload_seconds", 0)
                     verify_time = result.get("verify_seconds", 0)
-                    self.events.put(("info", f"{source.name}: запись {upload_time:.2f} с, проверка {verify_time:.2f} с"))
+                    lookup_time = result.get("lookup_seconds", 0)
+                    request_time = time.monotonic() - request_started
+                    self.events.put(("info", f"{source.name}: поиск в папке {lookup_time:.2f} с; запись {upload_time:.2f} с; проверка {verify_time:.2f} с; MTP всего {request_time:.2f} с"))
                 else:
                     target = dst / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -320,7 +323,7 @@ class PhoneMover:
                 moved += 1; done += size
                 elapsed = max(time.monotonic() - started, 0.001)
                 speed = done / elapsed; remaining = (total - done) / speed if speed else 0
-                self.events.put(("progress", done / total * 100 if total else index / len(files) * 100, f"{index}/{len(files)}  •  {source.name}", f"{speed / 1048576:.1f} МБ/с  •  осталось примерно {self._eta(remaining)}"))
+                self.events.put(("progress", done / total * 100 if total else index / len(files) * 100, f"{index}/{len(files)}  •  {source.name}", f"В среднем с проверкой: {speed / 1048576:.1f} МБ/с  •  осталось примерно {self._eta(remaining)}"))
             except Exception as exc:
                 errors += 1
                 self.events.put(("info", f"Ошибка: {relative} — {exc}"))

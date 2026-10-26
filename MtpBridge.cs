@@ -18,7 +18,7 @@ class MtpBridge
         Console.InputEncoding = Encoding.UTF8;
         Console.OutputEncoding = new UTF8Encoding(false);
         var devices = MediaDevice.GetDevices().ToList();
-        var knownDirectories = new HashSet<string>(StringComparer.Ordinal);
+        var directoryIndexes = new Dictionary<string, Dictionary<string, MediaFileSystemInfo>>(StringComparer.Ordinal);
         try
         {
             string line;
@@ -40,46 +40,71 @@ class MtpBridge
                     else if (command == "upload")
                     {
                         string target = request["path"];
-                        bool alreadyPresent = device.FileExists(target);
-                        if (!alreadyPresent && device.DirectoryExists(target))
-                            throw new IOException("Вместо файла на телефоне находится папка. Оригинал сохранён.");
                         string parent = Path.GetDirectoryName(target);
+                        var lookupTimer = Stopwatch.StartNew();
+                        string directoryKey = device.DeviceId + "\n" + parent;
+                        Dictionary<string, MediaFileSystemInfo> index;
+                        if (!directoryIndexes.TryGetValue(directoryKey, out index))
+                        {
+                            if (!device.DirectoryExists(parent)) device.CreateDirectory(parent);
+                            index = new Dictionary<string, MediaFileSystemInfo>(StringComparer.OrdinalIgnoreCase);
+                            foreach (var entry in device.GetDirectoryInfo(parent).EnumerateFileSystemInfos())
+                            {
+                                // Ambiguous names must never cause source deletion.
+                                if (index.ContainsKey(entry.Name)) index[entry.Name] = null;
+                                else index.Add(entry.Name, entry);
+                            }
+                            directoryIndexes.Add(directoryKey, index);
+                        }
+                        MediaFileSystemInfo existing;
+                        string name = Path.GetFileName(target);
+                        bool alreadyPresent = index.TryGetValue(name, out existing);
+                        var file = existing as MediaFileInfo;
+                        if (alreadyPresent && file == null)
+                            throw new IOException("Имя занято папкой или неоднозначно. Оригинал сохранён.");
+                        if (alreadyPresent) file.Refresh();
+                        double lookupSeconds = lookupTimer.Elapsed.TotalSeconds;
                         string expected;
                         long size;
-                        double uploadSeconds, verifySeconds;
+                        double uploadSeconds, verifySeconds, sourceHashSeconds;
                         using (var source = new FileStream(request["source"], FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan))
                         {
                             size = source.Length;
-                            if (alreadyPresent && device.GetFileInfo(target).Length != (ulong)size)
+                            if (alreadyPresent && file.Length != (ulong)size)
                                 throw new IOException("Имя совпадает, но размер копии другой. Оригинал сохранён.");
+                            var hashTimer = Stopwatch.StartNew();
                             using (var sha = SHA256.Create()) expected = Hex(sha.ComputeHash(source));
+                            sourceHashSeconds = hashTimer.Elapsed.TotalSeconds;
                             source.Position = 0;
                             var timer = Stopwatch.StartNew();
                             if (!alreadyPresent)
                             {
-                                // Only cache parents confirmed in this connected session. Do not cache files:
-                                // Explorer or another application may add a conflicting file at any time.
-                                string directoryKey = device.DeviceId + "\n" + parent;
-                                if (!knownDirectories.Contains(directoryKey))
-                                {
-                                    if (!device.DirectoryExists(parent)) device.CreateDirectory(parent);
-                                    knownDirectories.Add(directoryKey);
-                                }
+                                // Keep the library's live collision check before creation: another app
+                                // can add a conflicting file after our directory snapshot was built.
                                 device.UploadFile(source, target);
                             }
                             uploadSeconds = alreadyPresent ? 0 : timer.Elapsed.TotalSeconds;
+                            if (!alreadyPresent)
+                            {
+                                lookupTimer.Restart();
+                                file = device.GetFileInfo(target);
+                                index[name] = file;
+                                lookupSeconds += lookupTimer.Elapsed.TotalSeconds;
+                            }
                             timer.Restart();
                             using (var sha = SHA256.Create())
                             using (var sink = new CryptoStream(Stream.Null, sha, CryptoStreamMode.Write))
                             {
                                 // Read bytes back through WPD, without keeping another disk copy.
-                                device.DownloadFile(target, sink);
+                                // Open the WPD object already resolved above. DownloadFile(path)
+                                // would enumerate the large directory yet again.
+                                using (var remote = file.OpenRead()) remote.CopyTo(sink);
                                 sink.FlushFinalBlock();
                                 if (Hex(sha.Hash) != expected) throw new IOException("Проверка SHA-256 копии на телефоне не пройдена. Оригинал сохранён.");
                             }
                             verifySeconds = timer.Elapsed.TotalSeconds;
                         }
-                        Reply(new { ok = true, sha256 = expected, size = size, already_present = alreadyPresent, upload_seconds = uploadSeconds, verify_seconds = verifySeconds });
+                        Reply(new { ok = true, sha256 = expected, size = size, already_present = alreadyPresent, upload_seconds = uploadSeconds, verify_seconds = verifySeconds, lookup_seconds = lookupSeconds, source_hash_seconds = sourceHashSeconds });
                     }
                     else throw new ArgumentException("Unknown command");
                 }
